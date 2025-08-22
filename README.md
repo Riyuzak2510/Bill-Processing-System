@@ -1,182 +1,162 @@
-# REST API Starter
+# Bill Processing System Documentation
 
-This is a RESTful API Starter with a single Hello World API endpoint.
+## Overview
+This project implements a bill processing system using Go, Encore, and Temporal. It exposes a set of RESTful APIs for bill lifecycle management and leverages Temporal workflows to orchestrate billing periods, bill creation, line item management, and closing operations in a reliable, fault-tolerant manner.
 
-## Prerequisites 
+---
 
-**Install Encore:**
-- **macOS:** `brew install encoredev/tap/encore`
-- **Linux:** `curl -L https://encore.dev/install.sh | bash`
-- **Windows:** `iwr https://encore.dev/install.ps1 | iex`
+## Exposed APIs
 
-## Create app
+### 1. Start Billing Period
+- **Endpoint:** `POST /bills/startbillingperiod`
+- **Description:** Starts a new billing period for a customer by launching a Temporal workflow.
+- **Request Body:**
+  - `customer_id` (string, required)
+  - `currency` (string, required, e.g., "USD")
+  - `billing_period_days` (int, required)
+- **Response:** `200 OK` on success, error otherwise.
 
-Create a local app from this template:
+### 2. Create Bill
+- **Endpoint:** `POST /bills/createbill`
+- **Description:** Creates a new bill for a customer within an active billing period.
+- **Request Body:**
+  - `customer_id` (string, required)
+  - `currency` (string, required)
+- **Response:**
+  - `bill_id` (string)
+  - `workflow_id` (string)
 
-```bash
-encore app create my-app-name --example=hello-world
-```
+### 3. Add Line Item
+- **Endpoint:** `POST /bills/addItem/:customerId/:billId`
+- **Description:** Adds a line item to a specific bill.
+- **Request Body:**
+  - `description` (string, required)
+  - `amount` (float, required)
+  - `quantity` (int, required)
+  - `currency` (string, required)
+- **Response:**
+  - `line_item` (object)
+  - `bill` (object)
 
-## Run app locally
+### 4. Close Bill
+- **Endpoint:** `POST /bills/close/:customerId/:billId`
+- **Description:** Closes a specific bill, preventing further line items from being added.
+- **Request Body:**
+  - `reason` (string, required)
+- **Response:**
+  - `bill` (object)
+  - `total_amount` (float)
+  - `total_items` (int)
+  - `closed_at` (timestamp)
 
-Run this command from your application's root folder:
+### 5. Get Bill
+- **Endpoint:** `GET /bills/getBill/:customerId/:billId`
+- **Description:** Retrieves details of a specific bill.
+- **Response:**
+  - `bill` (object)
 
-```bash
-encore run
-```
-## Using the API
+### 6. List Bills
+- **Endpoint:** `POST /bills/listBills/:customerId`
+- **Description:** Lists all bills for a customer, optionally filtered by status.
+- **Request Body:**
+  - `status` (string, optional: "OPEN" or "CLOSED")
+- **Response:**
+  - `bills` (array)
+  - `total` (float)
 
-To see that your app is running, you can ping the API.
+### 7. Close Billing Period
+- **Endpoint:** `POST /bills/closeBillingPeriod/:customerId`
+- **Description:** Closes the billing period for a customer, closing all open bills.
+- **Response:** `200 OK` on success.
 
-```bash
-curl http://localhost:4000/hello/World
-```
+### 8. Health Check
+- **Endpoint:** `GET /bills/health`
+- **Description:** Returns the health status of the service and Temporal connection.
+- **Response:**
+  - `status` (string)
+  - `service` (string)
+  - `task_queue` (string)
+  - `error` (string, optional)
 
-### Local Development Dashboard
+---
 
-While `encore run` is running, open [http://localhost:9400/](http://localhost:9400/) to access Encore's [local developer dashboard](https://encore.dev/docs/go/observability/dev-dash).
+## Temporal Workflow Usage
 
-Here you can see traces for all requests that you made, see your architecture diagram (just a single service for this simple example), and view API documentation in the Service Catalog.
+### Why Temporal?
+Temporal provides durable, reliable, and scalable workflow orchestration. In this project, it ensures that billing periods, bill creation, and closing operations are resilient to failures and can be managed over long durations.
 
-## Development
+### Workflow Design
+- **BillWorkflow**: The core workflow manages the lifecycle of a billing period for a customer. It:
+  - Sets up signal and query handlers for dynamic interaction (e.g., adding line items, closing bills, querying state).
+  - Listens for signals to create bills, add line items, or close bills.
+  - Waits for the billing period to elapse (using a timer) or for an explicit close signal.
+  - On completion, closes all open bills and finalizes the billing period.
 
-### Add a new service
+#### Key Features:
+- **Signals**: Used to asynchronously add line items, create bills, or close bills during the workflow's execution.
+- **Queries**: Allow external systems to query the current state of bills in real time.
+- **Timers**: Ensure the workflow runs for the full billing period, automatically closing bills if not done manually.
+- **Idempotency**: Workflow and API design ensure that repeated requests do not cause inconsistent state.
 
-With Encore.go you can create a new service by creating a regular Go package and then defining at least one API within it. Encore recognizes this as a service, and uses the package name as the service name.
+### Example Flow
+1. `StartBillingPeriod` API starts a Temporal workflow for a customer.
+2. `CreateBill` and `AddLineItem` APIs send signals to the workflow to mutate state.
+3. `CloseBill` and `CloseBillingPeriod` APIs send signals to close bills or the entire period.
+4. The workflow maintains all state in memory (durably persisted by Temporal) and exposes queries for real-time inspection.
+5. When the billing period ends (timer fires) or is closed, the workflow finalizes all bills and completes.
 
-On disk it might look like this:
+---
 
-```
-/my-app
-├── encore.app          // ... and other top-level project files
-│
-├── hello               // hello service (a Go package)
-│   ├── hello.go        // hello service code
-│   └── hello_test.go   // tests for hello service
-│
-└── world               // world service (a Go package)
-    └── world.go        // world service code
-```
+## Error Handling
+- All APIs return clear error messages and codes for invalid input, missing workflows, or Temporal failures.
+- Validation helpers ensure only valid data is processed.
 
-Learn more in the docs: https://encore.dev/docs/go/primitives/services
+---
 
-### Create an API endpoint
+## Extensibility
+- The system is designed for easy extension: new signals, queries, or workflow logic can be added with minimal changes.
+- Currency conversion and accrual logic are pluggable for future enhancements.
 
-With Encore.go you can turn a regular Go function into an API endpoint by adding the `//encore:api` annotation to it. This tells Encore that the function should be exposed as an API endpoint and Encore will automatically generate the necessary boilerplate at compile-time.
+---
 
-For example, in this app you app will have a `hello` service with a `Ping` API endpoint:
+## Accrual Factor Logic
+
+### How Accrual Factor is Used
+The accrual factor is used in the bill processing workflow to adjust the amount of a line item based on how much time has passed since the billing period started. When a new line item is added to a bill, the system calculates an accrual factor using the `getAccrualFactor` function. This factor is then multiplied with the (possibly converted) amount of the line item before it is added to the bill's total.
+
+**Usage Example:**
+When handling an AddLineItem signal in the workflow, the following logic is applied:
 
 ```go
-//encore:api public path=/hello/:name
-func World(ctx context.Context, name string) (*Response, error) {
-	msg := "Hello, " + name + "!"
-	return &Response{Message: msg}, nil
-}
-
-type Response struct {
-	Message string
-}
+accrualFactor := getAccrualFactor(workflowState.StartedAt)
+signal.LineItem.Amount = convertCurrencyAmount(signal.Currency, billState.Currency, signal.LineItem.Amount) * accrualFactor
 ```
 
-You can define different access controls using:
-- `//encore:api public` - Public API endpoint
-- `//encore:api private` - Defines a private API that is never accessible to the outside world. It can only be called from other services in your app
-- `//encore:api auth` - Defines an API that anybody can call, but requires valid authentication
+### Simple Time-Based Implementation
+In this implementation, the accrual factor is determined by a simple rule:
+- If the billing period started more than 24 hours ago, the accrual factor is set to 2.5.
+- Otherwise, the accrual factor is 1.0 (no adjustment).
 
-Learn more in the docs: https://encore.dev/docs/go/primitives/defining-apis
+This is a placeholder for more complex business logic. In a real-world scenario, the accrual factor might depend on additional parameters, such as customer type, bill type, or external data sources. For demonstration purposes, we use this straightforward time-based approach to show how such logic can be integrated and easily extended in the future.
 
-### Service-to-service API calls
+---
 
-Calling an API endpoint looks like a regular function call with Encore.go. To call an endpoint you first import the other service as a Go package using `import "encore.app/package-name"`.
+## Currency Support and Conversion
 
-In the example below, we import the service `hello` and call the `Ping` endpoint using a function call to `hello.Ping`:
+### Supported Currencies
+This system currently supports only two types of currency:
+- **USD** (United States Dollar)
+- **GEL** (Georgian Lari)
 
-```go
-import "encore.app/hello" // import service
+### Currency Conversion Logic
+When a line item is added to a bill, its amount is automatically converted to the currency of the bill, if necessary. The conversion is handled by the `convertCurrencyAmount` function, which uses a fixed conversion rate for demonstration purposes:
+- USD to GEL: amount × 2.5
+- GEL to USD: amount × 0.4
+- If the currencies are the same, the amount is unchanged.
 
-//encore:api public
-func MyOtherAPI(ctx context.Context) error {
-    resp, err := hello.Ping(ctx, &hello.PingParams{Name: "World"})
-    if err == nil {
-        log.Println(resp.Message) // "Hello, World!"
-    }
-    return err
-}
-```
+This ensures that all amounts within a bill are consistent and in the bill's original currency, regardless of the currency used when adding individual items. In a production system, this logic could be extended to support more currencies and dynamic exchange rates.
 
-Learn more in the docs: https://encore.dev/docs/go/primitives/api-calls
+---
 
-### Add a database
-
-To create a database, import `encore.dev/storage/sqldb` and call `new SQLDatabase`, assigning the result to a top-level variable. For example:
-
-```go
-import "encore.dev/storage/sqldb"
-
-// Create the todo database and assign it to the "tododb" variable
-var tododb = sqldb.NewDatabase("todo", sqldb.DatabaseConfig{
-	Migrations: "./migrations",
-})
-```
-
-Then create a directory `migrations` inside the service directory and add a migration file `0001_create_table.up.sql` to define the database schema. For example:
-
-```sql
-CREATE TABLE todo_item (
-  id BIGSERIAL PRIMARY KEY,
-  title TEXT NOT NULL,
-  done BOOLEAN NOT NULL DEFAULT false
-  -- etc...
-);
-```
-
-Once you've added a migration, restart your app with `encore run` to start up the database and apply the migration. Keep in mind that you need to have [Docker](https://docker.com) installed and running to start the database.
-
-Learn more in the docs: https://encore.dev/docs/go/primitives/databases
-
-### Learn more
-
-There are many more features to explore in Encore.go, for example:
-
-- [Cron jobs](https://encore.dev/docs/go/primitives/cron-jobs)
-- [Pub/Sub](https://encore.dev/docs/go/primitives/pubsub)
-- [Object Storage](https://encore.dev/docs/go/primitives/object-storage)
-- [Secrets](https://encore.dev/docs/go/primitives/secrets)
-- [Authentication handlers](https://encore.dev/docs/go/develop/auth)
-- [Middleware](https://encore.dev/docs/go/develop/middleware)
-
-## Deployment
-
-### Self-hosting
-
-See the [self-hosting instructions](https://encore.dev/docs/go/self-host/docker-build) for how to use `encore build docker` to create a Docker image and configure it.
-
-### Encore Cloud Platform
-
-Deploy your application to a free staging environment in Encore's development cloud using `git push encore`:
-
-```bash
-git add -A .
-git commit -m 'Commit message'
-git push encore
-```
-
-You can also open your app in the [Cloud Dashboard](https://app.encore.dev) to integrate with GitHub, or connect your AWS/GCP account, enabling Encore to automatically handle cloud deployments for you.
-
-## Link to GitHub
-
-Follow these steps to link your app to GitHub:
-
-1. Create a GitHub repo, commit and push the app.
-2. Open your app in the [Cloud Dashboard](https://app.encore.dev).
-3. Go to **Settings ➔ GitHub** and click on **Link app to GitHub** to link your app to GitHub and select the repo you just created.
-4. To configure Encore to automatically trigger deploys when you push to a specific branch name, go to the **Overview** page for your intended environment. Click on **Settings** and then in the section **Branch Push** configure the **Branch name** and hit **Save**.
-5. Commit and push a change to GitHub to trigger a deploy.
-
-[Learn more in the docs](https://encore.dev/docs/platform/integrations/github)
-
-## Testing
-
-```bash
-encore test ./...
-```
+## Summary
+This project demonstrates a robust, production-grade bill processing system using Encore and Temporal. It exposes a clean API surface for clients and leverages Temporal's workflow engine for reliability, observability, and operational simplicity.
